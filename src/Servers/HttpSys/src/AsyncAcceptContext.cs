@@ -22,7 +22,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             RunContinuationsAsynchronously = false
         };
 
-        private NativeRequestContext _nativeRequestContext;
+        private RequestContext _requestContext;
 
         internal AsyncAcceptContext(HttpSysListener server)
         {
@@ -70,16 +70,17 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                     // points to it we need to hook up our authentication handling code here.
                     try
                     {
-                        var nativeContext = asyncContext._nativeRequestContext;
+                        var requestContext = asyncContext._requestContext;
 
-                        if (server.ValidateRequest(nativeContext) && server.ValidateAuth(nativeContext))
+                        if (server.ValidateRequest(requestContext) && server.ValidateAuth(requestContext))
                         {
                             // It's important that we clear the native request context before we set the result
                             // we want to reuse this object for future accepts.
-                            asyncContext._nativeRequestContext = null;
+                            asyncContext._requestContext = null;
 
-                            var requestContext = new RequestContext(server, nativeContext);
-                            asyncContext._mrvts.SetResult(requestContext);
+                            requestContext.Initialize();
+
+                            asyncContext._tcs.SetResult(requestContext);
 
                             complete = true;
                         }
@@ -92,14 +93,14 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                     {
                         if (!complete)
                         {
-                            asyncContext.AllocateNativeRequest(size: asyncContext._nativeRequestContext.Size);
+                            asyncContext.AllocateNativeRequest(size: asyncContext._requestContext.Size);
                         }
                     }
                 }
                 else
                 {
                     //  (uint)backingBuffer.Length - AlignmentPadding
-                    asyncContext.AllocateNativeRequest(numBytes, asyncContext._nativeRequestContext.RequestId);
+                    asyncContext.AllocateNativeRequest(numBytes, asyncContext._requestContext.RequestId);
                 }
 
                 // We need to issue a new request, either because auth failed, or because our buffer was too small the first time.
@@ -124,8 +125,8 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
         private static unsafe void IOWaitCallback(uint errorCode, uint numBytes, NativeOverlapped* nativeOverlapped)
         {
-            var asyncResult = (AsyncAcceptContext)ThreadPoolBoundHandle.GetNativeOverlappedState(nativeOverlapped);
-            IOCompleted(asyncResult, errorCode, numBytes);
+            var acceptContext = (AsyncAcceptContext)ThreadPoolBoundHandle.GetNativeOverlappedState(nativeOverlapped);
+            IOCompleted(acceptContext, errorCode, numBytes);
         }
 
         private uint QueueBeginGetContext()
@@ -138,21 +139,21 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 uint bytesTransferred = 0;
                 statusCode = HttpApi.HttpReceiveHttpRequest(
                     Server.RequestQueue.Handle,
-                    _nativeRequestContext.RequestId,
+                    _requestContext.RequestId,
                     // Small perf impact by not using HTTP_RECEIVE_REQUEST_FLAG_COPY_BODY
                     // if the request sends header+body in a single TCP packet 
                     (uint)HttpApiTypes.HTTP_FLAGS.NONE,
-                    _nativeRequestContext.NativeRequest,
-                    _nativeRequestContext.Size,
+                    _requestContext.NativeRequest,
+                    _requestContext.Size,
                     &bytesTransferred,
                     _overlapped);
 
-                if (statusCode == UnsafeNclNativeMethods.ErrorCodes.ERROR_INVALID_PARAMETER && _nativeRequestContext.RequestId != 0)
+                if (statusCode == UnsafeNclNativeMethods.ErrorCodes.ERROR_INVALID_PARAMETER && _requestContext.RequestId != 0)
                 {
                     // we might get this if somebody stole our RequestId,
                     // set RequestId to 0 and start all over again with the buffer we just allocated
                     // BUGBUG: how can someone steal our request ID?  seems really bad and in need of fix.
-                    _nativeRequestContext.RequestId = 0;
+                    _requestContext.RequestId = 0;
                     retry = true;
                 }
                 else if (statusCode == UnsafeNclNativeMethods.ErrorCodes.ERROR_MORE_DATA)
@@ -176,17 +177,16 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
         private void AllocateNativeRequest(uint? size = null, ulong requestId = 0)
         {
-            _nativeRequestContext?.ReleasePins();
-            _nativeRequestContext?.Dispose();
+            _requestContext?.ReleasePins();
+            _requestContext?.Dispose();
 
             var boundHandle = Server.RequestQueue.BoundHandle;
-
             if (_overlapped != null)
             {
                 boundHandle.FreeNativeOverlapped(_overlapped);
             }
 
-            _nativeRequestContext = new NativeRequestContext(Server.MemoryPool, size, requestId);
+            _requestContext = new RequestContext(Server, size, requestId);
             _overlapped = boundHandle.AllocateNativeOverlapped(_preallocatedOverlapped);
         }
 

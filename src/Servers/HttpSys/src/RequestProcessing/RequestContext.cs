@@ -11,26 +11,24 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpSys.Internal;
 using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.HttpSys
 {
-    internal sealed class RequestContext : IDisposable, IThreadPoolWorkItem
+    internal sealed partial class RequestContext : NativeRequestContext, IThreadPoolWorkItem
     {
         private static readonly Action<object> AbortDelegate = Abort;
-        private NativeRequestContext _memoryBlob;
         private CancellationTokenSource _requestAbortSource;
         private CancellationToken? _disconnectToken;
         private bool _disposed;
+        private bool _initialized;
 
-        internal RequestContext(HttpSysListener server, NativeRequestContext memoryBlob)
+        public RequestContext(HttpSysListener server, uint? bufferSize, ulong requestId)
+            : base(server.MemoryPool, bufferSize, requestId)
         {
-            // TODO: Verbose log
             Server = server;
-            _memoryBlob = memoryBlob;
-            Request = new Request(this, _memoryBlob);
-            Response = new Response(this);
             AllowSynchronousIO = server.Options.AllowSynchronousIO;
         }
 
@@ -40,9 +38,9 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
         internal ILogger Logger => Server.Logger;
 
-        public Request Request { get; }
+        public Request Request { get; set; }
 
-        public Response Response { get; }
+        public Response Response { get; set; }
 
         public WindowsPrincipal User => Request.User;
 
@@ -132,31 +130,38 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             return value != null;
         }
 
+
         /// <summary>
         /// Flushes and completes the response.
         /// </summary>
-        public void Dispose()
+        public override unsafe void Dispose()
         {
             if (_disposed)
             {
                 return;
             }
+
             _disposed = true;
 
-            // TODO: Verbose log
-            try
+            if (_initialized)
             {
-                _requestAbortSource?.Dispose();
-                Response.Dispose();
+                // TODO: Verbose log
+                try
+                {
+                    _requestAbortSource?.Dispose();
+                    Response.Dispose();
+                }
+                catch
+                {
+                    Abort();
+                }
+                finally
+                {
+                    Request.Dispose();
+                }
             }
-            catch
-            {
-                Abort();
-            }
-            finally
-            {
-                Request.Dispose();
-            }
+
+            base.Dispose();
         }
 
         /// <summary>
@@ -246,6 +251,8 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             var messagePump = MessagePump;
             var application = messagePump.Application;
 
+            Initialize();
+
             try
             {
                 if (messagePump.Stopping)
@@ -258,16 +265,15 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 messagePump.IncrementOutstandingRequest();
                 try
                 {
-                    var featureContext = new FeatureContext(this);
-                    context = application.CreateContext(featureContext.Features);
+                    context = application.CreateContext(Features);
                     try
                     {
                         await application.ProcessRequestAsync(context).SupressContext();
-                        await featureContext.CompleteAsync();
+                        await CompleteAsync();
                     }
                     finally
                     {
-                        await featureContext.OnCompleted();
+                        await OnCompleted();
                     }
                     application.DisposeContext(context, null);
                     Dispose();
@@ -315,6 +321,39 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 Logger.LogError(LoggerEventIds.RequestError, ex, "ProcessRequestAsync");
                 Abort();
             }
+        }
+
+        public void Initialize()
+        {
+            if (_initialized)
+            {
+                return;
+            }
+
+            _initialized = true;
+
+            Request = new Request(this);
+            Response = new Response(this);
+
+            _features = new FeatureCollection(new StandardFeatureCollection(this));
+            _enableResponseCaching = Server.Options.EnableResponseCaching;
+
+            // Pre-initialize any fields that are not lazy at the lower level.
+            _requestHeaders = Request.Headers;
+            _httpMethod = Request.Method;
+            _path = Request.Path;
+            _pathBase = Request.PathBase;
+            _query = Request.QueryString;
+            _rawTarget = Request.RawUrl;
+            _scheme = Request.Scheme;
+
+            if (Server.Options.Authentication.AutomaticAuthentication)
+            {
+                _user = User;
+            }
+
+            _responseStream = new ResponseStream(Response.Body, OnResponseStart);
+            _responseHeaders = Response.Headers;
         }
 
         private void SetFatalResponse(int status)
