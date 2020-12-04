@@ -435,10 +435,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 _isDisposed = true;
                 RequestContext.Dispose();
                 (User?.Identity as WindowsIdentity)?.Dispose();
-                if (_nativeStream != null)
-                {
-                    _nativeStream.Dispose();
-                }
+                _nativeStream?.Dispose();
             }
         }
 
