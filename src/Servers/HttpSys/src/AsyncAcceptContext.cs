@@ -74,13 +74,16 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
                         if (server.ValidateRequest(requestContext) && server.ValidateAuth(requestContext))
                         {
-                            // It's important that we clear the native request context before we set the result
-                            // we want to reuse this object for future accepts.
+                            // It's important that we clear the request context before we set the result
+                            // we want to reuse the acceptContext object for future accepts.
                             asyncContext._requestContext = null;
 
-                            requestContext.Initialize();
+                            // Initialize features here once we're successfully validated the request
+                            // TODO: In the future defer this work to the thread pool so we can get off the IO thread
+                            // as quickly as possible
+                            requestContext.InitializeFeatures();
 
-                            asyncContext._tcs.SetResult(requestContext);
+                            asyncContext._mrvts.SetResult(requestContext);
 
                             complete = true;
                         }
@@ -199,11 +202,11 @@ namespace Microsoft.AspNetCore.Server.HttpSys
         {
             if (disposing)
             {
-                if (_nativeRequestContext != null)
+                if (_requestContext != null)
                 {
-                    _nativeRequestContext.ReleasePins();
-                    _nativeRequestContext.Dispose();
-                    _nativeRequestContext = null;
+                    _requestContext.ReleasePins();
+                    _requestContext.Dispose();
+                    _requestContext = null;
 
                     var boundHandle = Server.RequestQueue.BoundHandle;
 

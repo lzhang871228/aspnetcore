@@ -2,16 +2,13 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Security.Authentication.ExtendedProtection;
 using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpSys.Internal;
 using Microsoft.Extensions.Logging;
 
@@ -38,9 +35,9 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
         internal ILogger Logger => Server.Logger;
 
-        public Request Request { get; set; }
+        public Request Request { get; private set; }
 
-        public Response Response { get; set; }
+        public Response Response { get; private set; }
 
         public WindowsPrincipal User => Request.User;
 
@@ -251,8 +248,6 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             var messagePump = MessagePump;
             var application = messagePump.Application;
 
-            Initialize();
-
             try
             {
                 if (messagePump.Stopping)
@@ -321,39 +316,6 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 Logger.LogError(LoggerEventIds.RequestError, ex, "ProcessRequestAsync");
                 Abort();
             }
-        }
-
-        public void Initialize()
-        {
-            if (_initialized)
-            {
-                return;
-            }
-
-            _initialized = true;
-
-            Request = new Request(this);
-            Response = new Response(this);
-
-            _features = new FeatureCollection(new StandardFeatureCollection(this));
-            _enableResponseCaching = Server.Options.EnableResponseCaching;
-
-            // Pre-initialize any fields that are not lazy at the lower level.
-            _requestHeaders = Request.Headers;
-            _httpMethod = Request.Method;
-            _path = Request.Path;
-            _pathBase = Request.PathBase;
-            _query = Request.QueryString;
-            _rawTarget = Request.RawUrl;
-            _scheme = Request.Scheme;
-
-            if (Server.Options.Authentication.AutomaticAuthentication)
-            {
-                _user = User;
-            }
-
-            _responseStream = new ResponseStream(Response.Body, OnResponseStart);
-            _responseHeaders = Response.Headers;
         }
 
         private void SetFatalResponse(int status)

@@ -93,6 +93,40 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             TraceIdentifier = 0x200,
         }
 
+        public void InitializeFeatures()
+        {
+            if (_initialized)
+            {
+                return;
+            }
+
+            _initialized = true;
+
+            Request = new Request(this);
+            Response = new Response(this);
+
+            _features = new FeatureCollection(new StandardFeatureCollection(this));
+            _enableResponseCaching = Server.Options.EnableResponseCaching;
+
+            // Pre-initialize any fields that are not lazy at the lower level.
+            _requestHeaders = Request.Headers;
+            _httpMethod = Request.Method;
+            _path = Request.Path;
+            _pathBase = Request.PathBase;
+            _query = Request.QueryString;
+            _rawTarget = Request.RawUrl;
+            _scheme = Request.Scheme;
+
+            if (Server.Options.Authentication.AutomaticAuthentication)
+            {
+                _user = User;
+            }
+
+            _responseStream = new ResponseStream(Response.Body, OnResponseStart);
+            _responseHeaders = Response.Headers;
+        }
+
+
         private bool IsNotInitialized(Fields field)
         {
             return (_initializedFields & field) != field;
