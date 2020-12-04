@@ -95,11 +95,6 @@ namespace Microsoft.AspNetCore.Server.HttpSys
 
         public void InitializeFeatures()
         {
-            if (_initialized)
-            {
-                return;
-            }
-
             _initialized = true;
 
             Request = new Request(this);
